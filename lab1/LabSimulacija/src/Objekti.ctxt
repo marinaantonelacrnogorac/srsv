@@ -1,0 +1,5 @@
+#BlueJ class context
+comment0.target=Objekti
+comment1.params=id\ brzina\ smjer
+comment1.target=Objekti(int,\ int,\ char)
+numComments=2
