@@ -1,0 +1,5 @@
+#BlueJ class context
+comment0.target=Pjesak
+comment1.params=brzina\ smjer\ znak
+comment1.target=Pjesak(int,\ char,\ char)
+numComments=2
