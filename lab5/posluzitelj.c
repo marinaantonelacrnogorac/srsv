@@ -1,3 +1,4 @@
+
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -40,25 +41,16 @@ list_t;
 /* for static list initialization (empty list) */
 #define LIST_T_NULL	{ NULL, NULL }
 
-#define FIRST	0	
+#define FIRST	0	/* get first or last list element */
 #define LAST	1
 
-#define SK_NAME  "/SRSV_LAB5"  
-#define SM_SIZE  sizeof (struct dijeljeno)
-#define SK_SIZE  sizeof (struct dijeljena_lista)
 
-
-#define NAZIV_REDA	"/MSGQ_LAB5"
-#define MAX_PORUKA_U_REDU	10
-#define MAX_VELICINA_PORUKE	14
-
-/*! Inicijalizacija liste*/
 void list_init ( list_t *list )
 {
 	list->first = list->last = NULL;
 }
 
-/*! Dodavanje elementa na kraj liste */
+/*! Add element to list, add to tail - as last element */
 void list_append ( list_t *list, void *object, list_h *hdr )
 {
 	hdr->object = object; /* save reference to object */
@@ -75,7 +67,6 @@ void list_append ( list_t *list, void *object, list_h *hdr )
 		hdr->prev = NULL;
 	}
 }
-
 
 void *list_remove ( list_t *list, unsigned int flags, list_h *ref )
 {
@@ -109,6 +100,38 @@ void *list_remove ( list_t *list, unsigned int flags, list_h *ref )
 	}
 }
 
+struct shared {
+	int id;
+	int broj;
+	int zadatci[30];
+};
+
+struct shared_list {
+	list_h list;
+	char *poslovi;
+};
+
+static 	list_t lista;
+
+static sem_t sem;
+static pthread_mutex_t m;
+
+int br_poslova;
+int iter = 1000000000;
+pthread_cond_t punoPosla = PTHREAD_COND_INITIALIZER;
+int zavrsi = 0;
+
+#define SK_NAME  "/SRSV_LAB5"  /* created in /dev/shm/ */
+#define SM_SIZE  sizeof (struct shared)
+#define SK_SIZE  sizeof (struct key_shared)
+
+#define MSG_QNAME    "/MSGQ_LAB5"
+#define MSG_MAXMSGS  10
+#define MSG_MAXMSGSZ 14
+
+#define MSG_MSGSZ MSG_MAXMSGSZ /* must be at least MSG_MAXMSGSZ */
+
+
 static void signal_handler( int sig, siginfo_t *info, void *context )
 {
 	if(sig == SIGTERM){
@@ -117,14 +140,12 @@ static void signal_handler( int sig, siginfo_t *info, void *context )
 	}
 }
 
-
-
 void *radna_dretva (void *p)
 {
 	int *n = p;
 	int i, j, id;
-	struct dijeljena_lista *share;
-	struct dijeljeno *posao;
+	struct shared_list *share;
+	struct shared *posao;
 	
 	pthread_cond_wait(&punoPosla, &m);
 	
@@ -151,7 +172,6 @@ void *radna_dretva (void *p)
 				for (j = 0; j < iter; j++){
 					asm volatile ("":::"memory");
 				}
-				
 			}
 			
 			munmap ( posao, SM_SIZE );
@@ -171,41 +191,19 @@ void *radna_dretva (void *p)
 		}
 	}
 
-	pthread_exit(p);
+	return p; //ili pthread_exit(p);
 }
-
-struct dijeljeno {
-	int id;
-	int broj;
-	int zadatci[30];
-};
-
-struct dijeljena_lista {
-	list_h list;
-	char *poslovi;
-};
-
-static 	list_t lista;
-
-static sem_t sem;
-static pthread_mutex_t m;
-
-int br_poslova;
-unsigned long long int iter = 1000000000;
-pthread_cond_t punoPosla = PTHREAD_COND_INITIALIZER;
-int zavrsi = 0;
-
 
 int main (int argc,char *argv[])
 {
 	pthread_t *t;
 	int br_dretvi, i, j, cekanje, policy;
 	int *num, *status;
-	mqd_t opisnik_reda;
+	mqd_t mqdes;
 	char *msg_ptr;
 	size_t msg_len;
 	unsigned msg_prio;
-	struct dijeljena_lista *podatak;
+	struct shared_list *podatak;
 	struct timespec start, stop, timeout;
 	float total;
 	struct sched_param prio;
@@ -220,8 +218,7 @@ int main (int argc,char *argv[])
 		perror ( "Error: pthread_setschedparam (root permission?)" );
 		exit (1);
 	}
-
-
+	
 	if(argc == 3){
 		br_dretvi = atoi(argv[1]);
 		cekanje = atoi(argv[2]);
@@ -232,8 +229,6 @@ int main (int argc,char *argv[])
 		printf("Missing arguments!\n");
 		return 0;
 	}
-	
-	
 	
 	pthread_attr_init ( &attr );
 	pthread_attr_setinheritsched ( &attr, PTHREAD_EXPLICIT_SCHED );
@@ -279,9 +274,9 @@ int main (int argc,char *argv[])
 		pthread_create(&t[i], &attr, radna_dretva, (void *) &num[i]);
 	}
 	
-	opisnik_reda =  ( NAZIV_REDA, O_RDONLY );
-	if ( opisnik_reda == (mqd_t) -1 ) {
-		perror ( "potrosac:mq_open" );
+	mqdes = mq_open ( MSG_QNAME, O_RDONLY );
+	if ( mqdes == (mqd_t) -1 ) {
+		perror ( "consumer:mq_open" );
 		return -1;
 	}
 	
@@ -300,17 +295,18 @@ int main (int argc,char *argv[])
 		
 		timeout.tv_sec += 1.0;
 		
-		msg_ptr = (char *) malloc(MAX_VELICINA_PORUKE * sizeof(char));
-		msg_len = mq_timedreceive (opisnik_reda, msg_ptr, MAX_VELICINA_PORUKE, &msg_prio, &timeout );
+		msg_ptr = (char *) malloc(MSG_MSGSZ * sizeof(char));
+		msg_len = mq_timedreceive ( mqdes, msg_ptr, MSG_MSGSZ, &msg_prio, &timeout );
 		if ( msg_len < 0 ) {
 			perror ( "mq_receive" );
 			return -1;
 		}
 		else if(strstr(msg_ptr, "/SRSV_LAB5") != NULL){
 			printf ( "P: zaprimio %s \n", msg_ptr );
-			podatak = (struct dijeljena_lista *) malloc(sizeof(struct dijeljena_lista));
+			podatak = (struct shared_list *) malloc(sizeof(struct shared_list));
 			podatak->poslovi = msg_ptr;
-			list_append(&lista, podatak, &podatak->list);			
+			list_append(&lista, podatak, &podatak->list);
+			
 			br_poslova++;
 		}
 		
